@@ -1,7 +1,9 @@
+import asyncio
 import json
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 
+from app.batch.processor import process_batch
 from app.schemas import BatchAck, BatchRequest, BatchResults, BatchStatus
 from app.storage import queries
 
@@ -12,7 +14,7 @@ router = APIRouter(prefix="/api/v1")
 async def submit_batch(body: BatchRequest, request: Request):
     db = request.app.state.db
     batch_id = await queries.create_batch(db, body.prompts)
-    # TODO: kick off background processing task
+    asyncio.create_task(process_batch(batch_id, body.prompts, db))
     return BatchAck(batch_id=batch_id)
 
 
@@ -28,7 +30,7 @@ async def upload_batch(request: Request, file: UploadFile = File(...)):
 
     db = request.app.state.db
     batch_id = await queries.create_batch(db, prompts)
-    # TODO: kick off background processing task
+    asyncio.create_task(process_batch(batch_id, prompts, db))
     return BatchAck(batch_id=batch_id)
 
 
