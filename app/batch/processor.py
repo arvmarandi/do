@@ -33,10 +33,10 @@ async def process_batch(
 
     owns_client = client is None
     if owns_client:
-        client = InferenceClient(url=cfg.inference_url, max_retries=cfg.max_retries)
+        client = InferenceClient(url=cfg.inference_url)
 
     worker_tasks = [
-        asyncio.create_task(run_worker(queue, db, client, batch_id))
+        asyncio.create_task(run_worker(queue, db, client, batch_id, cfg.max_retries))
         for _ in range(cfg.worker_pool_size)
     ]
 
