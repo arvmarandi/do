@@ -126,8 +126,6 @@ In a second terminal:
 uvicorn app.main:app --port 8000 --reload
 ```
 
-The interactive API docs are available at [http://localhost:8000/docs](http://localhost:8000/docs).
-
 ---
 
 ## API endpoints
