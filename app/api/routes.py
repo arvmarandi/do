@@ -4,6 +4,7 @@ import json
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 
 from app.batch.processor import process_batch
+from app.config import settings
 from app.schemas import BatchAck, BatchRequest, BatchResults, BatchStatus
 from app.storage import queries
 
@@ -12,6 +13,11 @@ router = APIRouter(prefix="/api/v1")
 
 @router.post("/batches", status_code=202, response_model=BatchAck)
 async def submit_batch(body: BatchRequest, request: Request):
+    if len(body.prompts) > settings.max_batch_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch exceeds maximum size of {settings.max_batch_size} prompts.",
+        )
     db = request.app.state.db
     batch_id = await queries.create_batch(db, body.prompts)
     asyncio.create_task(process_batch(batch_id, body.prompts, db))
@@ -27,6 +33,11 @@ async def upload_batch(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="File must contain a JSON array of strings.")
     if not isinstance(prompts, list) or not all(isinstance(p, str) for p in prompts): # prompts must be a list and the prompts themselves must be strings
         raise HTTPException(status_code=400, detail="JSON must be an array of strings.")
+    if len(prompts) > settings.max_batch_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Batch exceeds maximum size of {settings.max_batch_size} prompts.",
+        )
 
     db = request.app.state.db
     batch_id = await queries.create_batch(db, prompts)

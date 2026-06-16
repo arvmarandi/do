@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     max_retries: int = 3
     inference_url: str = "http://localhost:8081/infer"
     db_path: str = "batches.db"
+    max_batch_size: int = 10_000
 
 
 settings = Settings()

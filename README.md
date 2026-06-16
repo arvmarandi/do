@@ -229,7 +229,7 @@ The entire prompt list is read from the request body before processing starts. T
 ## Testing
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt
 pytest -v
 ```
 
