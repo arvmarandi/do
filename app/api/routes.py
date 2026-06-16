@@ -1,41 +1,51 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
-from pydantic import BaseModel
+import json
+
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+
+from app.schemas import BatchAck, BatchRequest, BatchResults, BatchStatus
+from app.storage import queries
 
 router = APIRouter(prefix="/api/v1")
 
 
-class BatchRequest(BaseModel):
-    prompts: list[str]
-
-
-class BatchAck(BaseModel):
-    batch_id: str
-    message: str = "Batch accepted and queued for processing."
-
-
 @router.post("/batches", status_code=202, response_model=BatchAck)
-async def submit_batch(body: BatchRequest):
-    """Accept a JSON array of prompts and kick off background processing."""
-    # TODO: persist batch + start background task
-    return BatchAck(batch_id="placeholder-uuid")
+async def submit_batch(body: BatchRequest, request: Request):
+    db = request.app.state.db
+    batch_id = await queries.create_batch(db, body.prompts)
+    # TODO: kick off background processing task
+    return BatchAck(batch_id=batch_id)
 
 
 @router.post("/batches/upload", status_code=202, response_model=BatchAck)
-async def upload_batch(file: UploadFile = File(...)):
-    """Accept a JSON file upload containing an array of prompts."""
-    # TODO: parse file, persist batch + start background task
-    return BatchAck(batch_id="placeholder-uuid")
+async def upload_batch(request: Request, file: UploadFile = File(...)):
+    raw = await file.read()
+    try:
+        prompts = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="File must contain a JSON array of strings.")
+    if not isinstance(prompts, list) or not all(isinstance(p, str) for p in prompts):
+        raise HTTPException(status_code=400, detail="JSON must be an array of strings.")
+
+    db = request.app.state.db
+    batch_id = await queries.create_batch(db, prompts)
+    # TODO: kick off background processing task
+    return BatchAck(batch_id=batch_id)
 
 
-@router.get("/batches/{batch_id}")
-async def get_batch_status(batch_id: str):
-    """Return processing status and progress counters for a batch."""
-    # TODO: query DB
-    raise HTTPException(status_code=404, detail="Batch not found")
+@router.get("/batches/{batch_id}", response_model=BatchStatus)
+async def get_batch_status(batch_id: str, request: Request):
+    db = request.app.state.db
+    batch = await queries.get_batch(db, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    return batch
 
 
-@router.get("/batches/{batch_id}/results")
-async def get_batch_results(batch_id: str, offset: int = 0, limit: int = 100):
-    """Return paginated inference results for a completed batch."""
-    # TODO: query DB
-    raise HTTPException(status_code=404, detail="Batch not found")
+@router.get("/batches/{batch_id}/results", response_model=BatchResults)
+async def get_batch_results(batch_id: str, request: Request, offset: int = 0, limit: int = 100):
+    db = request.app.state.db
+    batch = await queries.get_batch(db, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Batch not found.")
+    results = await queries.get_results(db, batch_id, offset=offset, limit=limit)
+    return BatchResults(batch_id=batch_id, offset=offset, limit=limit, results=results)
