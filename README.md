@@ -1,0 +1,219 @@
+# Batch Inference API
+
+A REST API that accepts batches of AI prompts, processes them concurrently against an inference endpoint, handles rate limiting with automatic retry and re-queue logic, and persists results to SQLite.
+
+---
+
+## Architecture
+
+```
+Client
+  │
+  └─► POST /api/v1/batches
+        │
+        ├─► Validate → write batch row to SQLite (status=pending)
+        ├─► Return 202 Accepted  {"batch_id": "<uuid>"}
+        │
+        └─► asyncio.create_task(process_batch)
+                │
+                ├─► Single asyncio.Queue  (all prompts loaded upfront)
+                │
+                ├─► Spawn WORKER_POOL_SIZE coroutines
+                │       each: queue.get() → client.call() → save result
+                │
+                ├─► On HTTP 429:
+                │       sleep(Retry-After seconds)
+                │       re-queue job with attempts + 1
+                │       fail permanently once attempts == MAX_RETRIES
+                │
+                └─► queue.join() → mark batch completed in SQLite
+```
+
+### Concurrency model
+
+- One `asyncio.Queue` is created per batch. All workers for that batch share the same queue — there is no per-worker queue.
+- The worker pool size is the hard concurrency cap. Spawning exactly `WORKER_POOL_SIZE` coroutines means at most that many prompts are actively calling the inference endpoint at any moment.
+- The queue is unbounded because all prompts are already in memory (received as a JSON request body). Bounding the queue to pool size would risk deadlock when re-queuing after a 429.
+- Each batch gets its own isolated queue and worker pool. Concurrent batches do not share workers.
+- `await asyncio.sleep()` on a 429 suspends only the one coroutine that hit the rate limit — all other workers continue processing.
+
+---
+
+## Project structure
+
+```
+app/
+├── main.py               # FastAPI app factory and lifespan (DB init)
+├── config.py             # Settings via pydantic-settings (.env support)
+├── schemas.py            # Pydantic request/response models
+├── api/
+│   └── routes.py         # POST /batches, POST /batches/upload,
+│                         # GET /batches/{id}, GET /batches/{id}/results
+├── batch/
+│   ├── processor.py      # process_batch(): fills queue, spawns workers
+│   └── worker.py         # run_worker(): per-prompt call, retry, re-queue
+├── inference/
+│   └── client.py         # InferenceClient: single HTTP call, raises on 429
+└── storage/
+    ├── database.py       # SQLite init and connection factory
+    └── queries.py        # Typed async query helpers
+
+mock_server/
+└── main.py               # Standalone mock inference server (demo only)
+
+demo/
+└── prompts.json          # Sample batch of 20 prompts for demo
+
+tests/
+├── conftest.py                # MockInferenceServer test double (respx)
+├── test_inference_client.py   # Client: 429 raises, Retry-After, error handling
+└── test_worker.py             # Worker pool: concurrency cap, re-queue, failure recording
+```
+
+---
+
+## Setup
+
+### Requirements
+
+- Python 3.12+
+
+### Install
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Configure
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `WORKER_POOL_SIZE` | `10` | Max concurrent workers per batch |
+| `MAX_RETRIES` | `3` | Max re-queue attempts per prompt on 429 |
+| `INFERENCE_URL` | `http://localhost:8081/infer` | Inference endpoint URL |
+| `DB_PATH` | `batches.db` | SQLite database file path |
+
+---
+
+## Running
+
+### 1. Start the mock inference server
+
+In one terminal:
+
+```bash
+uvicorn mock_server.main:app --port 8081
+```
+
+Control 429 behaviour with env vars:
+
+```bash
+RATE_LIMIT_EVERY=3 uvicorn mock_server.main:app --port 8081   # 429 every 3rd request
+RATE_LIMIT_EVERY=0 uvicorn mock_server.main:app --port 8081   # no 429s
+```
+
+### 2. Start the API
+
+In a second terminal:
+
+```bash
+uvicorn app.main:app --port 8000 --reload
+```
+
+The interactive API docs are available at [http://localhost:8000/docs](http://localhost:8000/docs).
+
+---
+
+## API endpoints
+
+### Submit a batch (JSON body)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/batches \
+  -H "Content-Type: application/json" \
+  -d @demo/prompts.json
+```
+
+### Submit a batch (file upload)
+
+```bash
+curl -X POST http://localhost:8000/api/v1/batches/upload \
+  -F "file=@demo/prompts.json"
+```
+
+Both return `202 Accepted` immediately while processing continues in the background:
+
+```json
+{
+  "batch_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "message": "Batch accepted and queued for processing."
+}
+```
+
+### Check batch status
+
+```bash
+curl http://localhost:8000/api/v1/batches/{batch_id}
+```
+
+```json
+{
+  "id": "f47ac10b-...",
+  "status": "processing",
+  "total": 20,
+  "processed": 14,
+  "failed": 1,
+  "created_at": "2026-06-16T10:00:00+00:00",
+  "completed_at": null
+}
+```
+
+`status` is one of: `pending` → `processing` → `completed`.
+
+### Retrieve results
+
+```bash
+curl "http://localhost:8000/api/v1/batches/{batch_id}/results?offset=0&limit=100"
+```
+
+```json
+{
+  "batch_id": "f47ac10b-...",
+  "offset": 0,
+  "limit": 100,
+  "results": [
+    {
+      "id": "...",
+      "batch_id": "f47ac10b-...",
+      "prompt_id": "...",
+      "prompt": "Explain the concept of recursion in simple terms.",
+      "result": "Inference result for: Explain the concept of recursion in simple terms.",
+      "status": "success",
+      "error": null,
+      "created_at": "2026-06-16T10:00:01+00:00"
+    }
+  ]
+}
+```
+
+---
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest -v
+```
+
+### What is tested
+
+| File | Coverage |
+|---|---|
+| `test_inference_client.py` | 429 raises `RateLimitExhausted` with correct `retry_after`; default backoff; non-429 errors fail immediately |
+| `test_worker.py` | All prompts processed; peak concurrency ≤ pool size; failed prompts recorded without stopping batch; 429 re-queues and eventually succeeds; permanent failure after max retries |
