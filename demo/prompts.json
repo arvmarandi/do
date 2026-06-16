@@ -1,0 +1,24 @@
+{
+  "prompts": [
+    "Explain the concept of recursion in simple terms.",
+    "What is the difference between a stack and a queue?",
+    "Describe how a binary search algorithm works.",
+    "What are the key principles of object-oriented programming?",
+    "Explain what a REST API is and how it works.",
+    "What is the difference between SQL and NoSQL databases?",
+    "Describe the concept of eventual consistency in distributed systems.",
+    "What is a race condition and how do you prevent it?",
+    "Explain the difference between concurrency and parallelism.",
+    "What is a deadlock and how can it be avoided?",
+    "Describe the CAP theorem in distributed systems.",
+    "What is the purpose of an index in a database?",
+    "Explain how garbage collection works in managed languages.",
+    "What is the difference between a process and a thread?",
+    "Describe the observer design pattern.",
+    "What is memoization and when would you use it?",
+    "Explain what a hash collision is and how it is handled.",
+    "What is the difference between eager and lazy evaluation?",
+    "Describe how a load balancer distributes traffic.",
+    "What is the purpose of a message queue in a distributed system?"
+  ]
+}
