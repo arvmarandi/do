@@ -23,7 +23,7 @@ async def upload_batch(request: Request, file: UploadFile = File(...)):
         prompts = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="File must contain a JSON array of strings.")
-    if not isinstance(prompts, list) or not all(isinstance(p, str) for p in prompts):
+    if not isinstance(prompts, list) or not all(isinstance(p, str) for p in prompts): # prompts must be a list and the prompts themselves must be strings
         raise HTTPException(status_code=400, detail="JSON must be an array of strings.")
 
     db = request.app.state.db
