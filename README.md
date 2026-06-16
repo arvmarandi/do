@@ -204,6 +204,28 @@ curl "http://localhost:8000/api/v1/batches/{batch_id}/results?offset=0&limit=100
 
 ---
 
+## Design tradeoffs
+
+### asyncio coroutines vs threads
+Workers are asyncio coroutines, not OS threads. This is the right fit for I/O-bound work (waiting on HTTP responses) — coroutines are cheap to spawn and don't need locking for shared state. The tradeoff is that any accidentally blocking call (a slow synchronous library, a CPU-heavy operation) would stall the entire event loop. Everything in this service uses async-native libraries (`httpx`, `aiosqlite`) to avoid that.
+
+### Single shared SQLite connection
+One `aiosqlite.Connection` is opened at startup and shared across all requests via `app.state.db`. SQLite in WAL mode handles concurrent readers safely, and routing all writes through a single async connection avoids contention. The tradeoff is that this does not scale horizontally — running multiple server processes would have them fighting over the same file. For a single-process service this is the right default; swap for PostgreSQL if horizontal scaling becomes a requirement.
+
+### Re-queue on 429 vs retrying inside the client
+When a worker hits a 429, it sleeps for `Retry-After` seconds and then puts the job back on the shared queue rather than retrying in a tight loop inside the HTTP client. This means the sleeping worker releases the job for any free worker to pick up after the delay, other workers continue processing unaffected, and all retry state (`attempts`) lives in one place on the `Job` object. The tradeoff is that if many workers hit 429 simultaneously, several are sleeping at once, temporarily shrinking the effective pool size.
+
+### Unbounded queue
+The queue is unbounded because all prompts arrive in a single JSON request body and are already in memory. Bounding the queue to pool size would risk deadlock: if all workers are sleeping on a 429 and the queue is full, no one can drain it. If very large batches (100k+ prompts) become a requirement, the right move is a bounded queue combined with a streaming producer that reads prompts from a file line by line, creating natural backpressure without loading everything into memory.
+
+### Per-batch worker pools
+Each batch gets its own isolated queue and worker pool. This keeps the implementation simple and batches completely independent — a slow or rate-limited batch cannot starve another. The tradeoff is that concurrent batches each spin up `WORKER_POOL_SIZE` workers, so submitting 10 batches simultaneously creates 100 concurrent workers all hitting the inference endpoint. A global semaphore or batch queue at the `process_batch` level would be needed to limit total concurrent workers across batches in a production setting.
+
+### Prompts loaded into memory upfront
+The entire prompt list is read from the request body before processing starts. This simplifies the implementation but means very large batches consume memory proportional to batch size for the lifetime of processing. For the scale described (1,000 items), this is not a concern.
+
+---
+
 ## Testing
 
 ```bash
